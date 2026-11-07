@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
+}
+
+/* Modern Web Guidance: :user-invalid / :user-valid progressive validation after interaction */
+input:user-invalid,
+select:user-invalid,
+textarea:user-invalid {
+  border-color: #dc2626;
+  background-color: #fef2f2;
+}
+
+input:user-valid {
+  border-color: #10b981;
+}
+
+input:user-invalid + .field-error-msg {
+  display: flex;
+}
+
+.field-error-msg {
+  display: none;
+}
+
+/* Native <dialog> modal backdrop styling */
+dialog::backdrop {
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(2px);
+}

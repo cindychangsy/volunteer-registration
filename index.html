@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Todo List - Supabase</title>
+  <!-- 透過 CDN 引入 @supabase/supabase-js v2 -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg-color: #f4f7fb;
+      --card-bg: #ffffff;
+      --primary: #10b981;
+      --primary-hover: #059669;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --danger: #ef4444;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans TC", sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 48px 16px;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 520px;
+      background: var(--card-bg);
+      border-radius: 16px;
+      box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 8px 10px -6px rgba(15, 23, 42, 0.04);
+      padding: 28px;
+    }
+
+    header {
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-main);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .subtitle {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 1rem;
+      border: 1.5px solid var(--border);
+      border-radius: 10px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input[type="text"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+    }
+
+    button {
+      padding: 12px 20px;
+      font-size: 1rem;
+      font-weight: 600;
+      color: #fff;
+      background-color: var(--primary);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background-color 0.2s, transform 0.1s;
+      white-space: nowrap;
+    }
+
+    button:hover:not(:disabled) {
+      background-color: var(--primary-hover);
+    }
+
+    button:active:not(:disabled) {
+      transform: scale(0.98);
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .status-msg {
+      font-size: 0.875rem;
+      padding: 12px 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .status-msg.error {
+      display: block;
+      background-color: #fef2f2;
+      color: var(--danger);
+      border: 1px solid #fecaca;
+    }
+
+    .todo-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .todo-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      background-color: #f8fafc;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      transition: border-color 0.2s, background-color 0.2s;
+    }
+
+    .todo-item:hover {
+      border-color: #cbd5e1;
+      background-color: #f1f5f9;
+    }
+
+    .todo-title {
+      font-size: 1rem;
+      font-weight: 500;
+      word-break: break-word;
+    }
+
+    .todo-date {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-left: 12px;
+      white-space: nowrap;
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: var(--text-muted);
+      font-size: 0.95rem;
+      border: 1.5px dashed var(--border);
+      border-radius: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>📝 待辦事項清單</h1>
+      <p class="subtitle">與 Supabase `todos` 資料表即時同步</p>
+    </header>
+
+    <div id="statusMsg" class="status-msg"></div>
+
+    <div class="input-group">
+      <input
+        type="text"
+        id="todoInput"
+        placeholder="請輸入待辦事項..."
+        autocomplete="off"
+      />
+      <button id="addBtn">新增</button>
+    </div>
+
+    <ul id="todoList" class="todo-list">
+      <li class="empty-state">載入資料中...</li>
+    </ul>
+  </div>
+
+  <script>
+    // =========================================================================
+    // 🔑 請在下方填入您的 Supabase 專案設定 (Project URL 與 anon public Key)
+    // =========================================================================
+    const SUPABASE_URL = https://lsappuzizypupfvyiyxj.supabase.co;
+    const SUPABASE_ANON_KEY = sb_publishable_ny_2K-mUqbDGKHgBfes7mw_wUJQzcBd;
+
+    // 初始化 Supabase Client
+    const { createClient } = supabase;
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // DOM 元素
+    const todoInput = document.getElementById('todoInput');
+    const addBtn = document.getElementById('addBtn');
+    const todoList = document.getElementById('todoList');
+    const statusMsg = document.getElementById('statusMsg');
+
+    function showError(message) {
+      statusMsg.textContent = message;
+      statusMsg.className = 'status-msg error';
+    }
+
+    function clearError() {
+      statusMsg.textContent = '';
+      statusMsg.className = 'status-msg';
+    }
+
+    function formatDate(isoString) {
+      if (!isoString) return '';
+      const date = new Date(isoString);
+      return date.toLocaleString('zh-TW', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    // 讀取 todos 資料表
+    async function fetchTodos() {
+      if (SUPABASE_URL === 'YOUR_SUPABASE_URL' || SUPABASE_ANON_KEY === 'YOUR_SUPABASE_ANON_KEY') {
+        showError('⚠️ 請先在 index.html 的 <script> 區塊填入您的 SUPABASE_URL 與 SUPABASE_ANON_KEY。');
+        todoList.innerHTML = '<li class="empty-state">尚未設定 Supabase 金鑰</li>';
+        return;
+      }
+
+      clearError();
+      const { data, error } = await supabaseClient
+        .from('todos')
+        .select('id, created_at, title')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('讀取失敗:', error);
+        showError(`讀取失敗：${error.message}`);
+        todoList.innerHTML = '<li class="empty-state">無法載入資料</li>';
+        return;
+      }
+
+      renderTodos(data);
+    }
+
+    // 渲染清單畫面
+    function renderTodos(todos) {
+      if (!todos || todos.length === 0) {
+        todoList.innerHTML = '<li class="empty-state">目前沒有待辦事項，新增第一筆吧！</li>';
+        return;
+      }
+
+      todoList.innerHTML = '';
+      todos.forEach((todo) => {
+        const li = document.createElement('li');
+        li.className = 'todo-item';
+
+        const titleSpan = document.createElement('span');
+        titleSpan.className = 'todo-title';
+        titleSpan.textContent = todo.title;
+
+        const dateSpan = document.createElement('span');
+        dateSpan.className = 'todo-date';
+        dateSpan.textContent = formatDate(todo.created_at);
+
+        li.appendChild(titleSpan);
+        li.appendChild(dateSpan);
+        todoList.appendChild(li);
+      });
+    }
+
+    // 新增資料至 Supabase todos 資料表
+    async function addTodo() {
+      const title = todoInput.value.trim();
+      if (!title) {
+        todoInput.focus();
+        return;
+      }
+
+      clearError();
+      addBtn.disabled = true;
+      addBtn.textContent = '新增中...';
+
+      const { error } = await supabaseClient
+        .from('todos')
+        .insert([{ title }]);
+
+      addBtn.disabled = false;
+      addBtn.textContent = '新增';
+
+      if (error) {
+        console.error('新增失敗:', error);
+        showError(`新增失敗：${error.message}`);
+        return;
+      }
+
+      todoInput.value = '';
+      todoInput.focus();
+      await fetchTodos();
+    }
+
+    // 事件綁定
+    addBtn.addEventListener('click', addTodo);
+    todoInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.isComposing) {
+        addTodo();
+      }
+    });
+
+    // 網頁載入時自動讀取資料
+    window.addEventListener('DOMContentLoaded', fetchTodos);
+  </script>
+</body>
+</html>
