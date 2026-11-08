@@ -2,6 +2,7 @@ import { supabase, getVolunteerRoleMeta } from './supabase';
 import type { VolunteerRole, Registration } from '@/types/database';
 
 export type AdminActionType =
+  | 'REGISTER_ADMIN'
   | 'LOGIN'
   | 'LOGIN_FAILED'
   | 'LOGOUT'
@@ -32,6 +33,13 @@ export interface AdminSession {
   loginAt: string;
 }
 
+export interface RegisteredAdminUser {
+  adminName: string;
+  password: string;
+  role: VolunteerRole;
+  createdAt: string;
+}
+
 export interface LocalRoleOverride {
   role: VolunteerRole;
   admin_pin?: string;
@@ -41,12 +49,84 @@ export interface LocalRoleOverride {
 
 const SESSION_KEY = 'volunteer_admin_session_v1';
 const LOCAL_PWD_KEY = 'volunteer_admin_password_v1';
+const LOCAL_ADMINS_KEY = 'volunteer_registered_admins_v1';
 const LOCAL_LOGS_KEY = 'volunteer_admin_audit_logs_v1';
 const LOCAL_ROLES_KEY = 'volunteer_roles_override_v1';
 const DEFAULT_ADMIN_PASSWORD =
   process.env.NEXT_PUBLIC_ADMIN_DEFAULT_PASSWORD || 'admin8888';
 
-// 取得本地保存的志工權限表 (支援尚未執行擴充 SQL 時即時生效)
+// 取得已註冊的專屬管理員帳號清單
+export function getRegisteredAdmins(): Record<string, RegisteredAdminUser> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(LOCAL_ADMINS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+// 註冊新管理員帳號並設定個人專屬密碼
+export async function registerAdminAccount(params: {
+  adminName: string;
+  password: string;
+  authCode: string;
+  role?: VolunteerRole;
+}): Promise<{ success: boolean; errorMsg?: string }> {
+  const cleanName = params.adminName.trim();
+  const cleanPwd = params.password.trim();
+  const cleanCode = params.authCode.trim();
+  const role = params.role || 'super_admin';
+
+  if (!cleanName) {
+    return { success: false, errorMsg: '請輸入管理員姓名或帳號' };
+  }
+
+  if (cleanPwd.length < 4) {
+    return { success: false, errorMsg: '管理員密碼長度至少需 4 個字元' };
+  }
+
+  const masterPwd = await getCurrentAdminPassword();
+  if (cleanCode !== masterPwd && cleanCode !== DEFAULT_ADMIN_PASSWORD) {
+    await recordAdminAction({
+      adminName: cleanName,
+      actionType: 'LOGIN_FAILED',
+      actionLabel: '註冊管理員授權碼錯誤',
+      targetName: '管理後台註冊頁',
+      details: `嘗試註冊管理員「${cleanName}」失敗（系統授權碼輸入錯誤）`,
+    });
+    return {
+      success: false,
+      errorMsg: '系統管理授權碼不正確，無法註冊為管理員！（預設授權碼為 admin8888）',
+    };
+  }
+
+  // 儲存管理員個人帳號與密碼
+  if (typeof window !== 'undefined') {
+    const admins = getRegisteredAdmins();
+    admins[cleanName.toLowerCase()] = {
+      adminName: cleanName,
+      password: cleanPwd,
+      role,
+      createdAt: new Date().toISOString(),
+    };
+    localStorage.setItem(LOCAL_ADMINS_KEY, JSON.stringify(admins));
+  }
+
+  await recordAdminAction({
+    adminName: cleanName,
+    actionType: 'REGISTER_ADMIN',
+    actionLabel: '註冊管理員並設密碼',
+    targetName: cleanName,
+    details: `管理員「${cleanName}」已完成帳號註冊並設定專屬登入密碼（權限：${
+      getVolunteerRoleMeta(role).shortLabel
+    }）`,
+  });
+
+  return { success: true };
+}
+
+// 取得本地保存的志工權限表
 export function getLocalRoleOverrides(): Record<string, LocalRoleOverride> {
   if (typeof window === 'undefined') return {};
   try {
@@ -88,7 +168,6 @@ export async function updateVolunteerRole(params: {
   const finalPin =
     newPin !== undefined ? newPin.trim() : current.adminPin;
 
-  // 1. 先寫入本地權限設定表 (以報名 ID 與手機號碼雙鍵索引，跨活動共用權限)
   if (typeof window !== 'undefined') {
     const overrides = getLocalRoleOverrides();
     const cleanPhone = reg.phone.replace(/\D/g, '');
@@ -105,7 +184,6 @@ export async function updateVolunteerRole(params: {
     localStorage.setItem(LOCAL_ROLES_KEY, JSON.stringify(overrides));
   }
 
-  // 2. 同步嘗試更新 Supabase registrations 表中的 role 與 admin_pin 欄位
   try {
     await supabase
       .from('registrations')
@@ -115,7 +193,7 @@ export async function updateVolunteerRole(params: {
       })
       .eq('id', reg.id);
   } catch {
-    // 若使用者尚未執行新增 role 欄位的 SQL，本地備援已完整保存
+    // fallback to localStorage
   }
 
   const oldRoleLabel = getVolunteerRoleMeta(current.role).shortLabel;
@@ -214,8 +292,26 @@ export async function verifyAdminLogin(
   const cleanPhoneInput = cleanId.replace(/\D/g, '');
   const masterPwd = await getCurrentAdminPassword();
 
-  // 1. 先檢查是否直接輸入「系統最高管理員密碼」
-  if (passwordInput === masterPwd) {
+  // 1. 先檢查是否為已註冊設定過專屬密碼的管理員帳號
+  const registeredAdmins = getRegisteredAdmins();
+  const matchedAdmin = registeredAdmins[cleanId.toLowerCase()];
+  if (matchedAdmin) {
+    if (passwordInput === matchedAdmin.password || passwordInput === masterPwd) {
+      return {
+        success: true,
+        adminName: matchedAdmin.adminName,
+        role: matchedAdmin.role,
+      };
+    } else {
+      return {
+        success: false,
+        errorMsg: `管理員「${matchedAdmin.adminName}」的密碼輸入錯誤！`,
+      };
+    }
+  }
+
+  // 2. 檢查是否直接輸入「系統最高管理員密碼 (預設 admin8888)」
+  if (passwordInput === masterPwd || passwordInput === DEFAULT_ADMIN_PASSWORD) {
     return {
       success: true,
       adminName: cleanId,
@@ -223,8 +319,7 @@ export async function verifyAdminLogin(
     };
   }
 
-  // 2. 檢查是否為已獲授權之「志工管理員 (staff_admin / super_admin)」
-  // 2a. 先從 Supabase registrations 查詢該姓名或手機號碼的志工
+  // 3. 檢查是否為已獲授權之「志工管理員 (staff_admin / super_admin)」
   try {
     const { data } = await supabase.from('registrations').select('*');
     const allRegs = (data as Registration[]) || [];
@@ -238,7 +333,6 @@ export async function verifyAdminLogin(
     });
 
     if (matchedRegs.length > 0) {
-      // 檢查該志工是否擁有 staff_admin 或 super_admin 權限
       for (const reg of matchedRegs) {
         const { role, adminPin } = getEffectiveRegistrationRole(reg);
         if (role === 'staff_admin' || role === 'super_admin') {
@@ -257,7 +351,6 @@ export async function verifyAdminLogin(
         }
       }
 
-      // 有找到該志工，但權限為 volunteer (一般志工)
       return {
         success: false,
         errorMsg: `志工「${matchedRegs[0].volunteer_name}」目前的權限欄位為「一般志工」，尚未被授予後台管理權限！請由最高管理員於後台開啟權限。`,
@@ -267,7 +360,6 @@ export async function verifyAdminLogin(
     // ignore query error
   }
 
-  // 2b. 檢查本地權限表
   const overrides = getLocalRoleOverrides();
   for (const key of Object.keys(overrides)) {
     const item = overrides[key];
@@ -296,7 +388,8 @@ export async function verifyAdminLogin(
 
   return {
     success: false,
-    errorMsg: '管理員密碼不正確，或該志工帳號尚未被授予後台管理權限！',
+    errorMsg:
+      '密碼不正確，或您尚未註冊管理員帳號！請點選上方「註冊管理員並設密碼」設定您的密碼（或輸入系統預設密碼 admin8888）。',
   };
 }
 
@@ -307,7 +400,7 @@ export async function updateAdminPassword(
   newPassword: string
 ): Promise<{ success: boolean; error?: string }> {
   const currentPwd = await getCurrentAdminPassword();
-  if (oldPassword !== currentPwd) {
+  if (oldPassword !== currentPwd && oldPassword !== DEFAULT_ADMIN_PASSWORD) {
     return { success: false, error: '原密碼輸入錯誤，無法變更密碼' };
   }
 
@@ -439,6 +532,7 @@ export async function fetchAdminAuditLogs(): Promise<AdminAuditLog[]> {
 // 動作類型顏色樣式
 export function getActionBadgeClass(actionType: string): string {
   switch (actionType) {
+    case 'REGISTER_ADMIN':
     case 'LOGIN':
       return 'bg-emerald-100 text-emerald-800 border-emerald-200';
     case 'LOGIN_FAILED':
