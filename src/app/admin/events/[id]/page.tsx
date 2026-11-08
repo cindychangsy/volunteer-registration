@@ -87,8 +87,20 @@ function normalizeBirthDate(raw: string): string {
     }
   }
 
-  // 處理純數字 7 碼 (如 0420510) 或 8 碼 (如 19530510)
+  // 處理 Excel 日期序列值 (5 碼數字，例如在 Excel 往下拉複製時 2015/1/1 變成 42005)
   const digits = trimmed.replace(/\D/g, '');
+  if (/^\d{5}$/.test(trimmed)) {
+    const excelSerial = parseInt(trimmed, 10);
+    if (excelSerial >= 10000 && excelSerial <= 65000) {
+      const utcDays = excelSerial - 25569;
+      const dateObj = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(dateObj.getTime())) {
+        return dateObj.toISOString().slice(0, 10);
+      }
+    }
+  }
+
+  // 處理純數字 7 碼 (如 0420510) 或 8 碼 (如 19530510)
   if (digits.length === 7) {
     const y = parseInt(digits.slice(0, 3), 10) + 1911;
     const m = digits.slice(3, 5);
@@ -297,33 +309,40 @@ export default function AdminEventRegistrationsPage() {
   }
 
   // 共用單筆寫入或更新邏輯（同時支援直接 INSERT 與 RPC 備援，確保資料庫皆可寫入）
-  async function upsertSingleRegistration(params: {
-    shiftId: string;
-    volunteerName: string;
-    phone: string;
-    email: string;
-    idNumber: string;
-    birthDate: string;
-    dietary: DietaryType;
-    emergencyContact: string;
-    emergencyPhone: string;
-    note: string;
-    status: RegistrationStatus;
-    checkedIn: boolean;
-    checkedInAt: string | null;
-    role?: VolunteerRole;
-  }): Promise<{ mode: 'inserted' | 'updated'; regId?: string; error?: string }> {
+  async function upsertSingleRegistration(
+    params: {
+      shiftId: string;
+      volunteerName: string;
+      phone: string;
+      email: string;
+      idNumber: string;
+      birthDate: string;
+      dietary: DietaryType;
+      emergencyContact: string;
+      emergencyPhone: string;
+      note: string;
+      status: RegistrationStatus;
+      checkedIn: boolean;
+      checkedInAt: string | null;
+      role?: VolunteerRole;
+    },
+    currentRegsList: Registration[] = registrations
+  ): Promise<{ mode: 'inserted' | 'updated'; regId?: string; error?: string }> {
+    const cleanName = (params.volunteerName || '').trim();
     const cleanPhone = normalizePhoneNumber(params.phone);
     const cleanIdNum = (params.idNumber || '').trim().toUpperCase();
 
-    // 檢查同一組別是否已有相同手機或身分證的志工
-    const existing = registrations.find(
+    // 重要防呆：只有當「同一組別」且「志工姓名相同」時，才視為更新既有志工資料！
+    // 避免管理員在 Excel 往下拉複製上一列（忘記改身分證字號或家人共用電話）時，誤把前一位志工覆蓋掉。
+    const existing = currentRegsList.find(
       (r) =>
         r.shift_id === params.shiftId &&
+        r.volunteer_name.trim() === cleanName &&
         ((cleanPhone && normalizePhoneNumber(r.phone) === cleanPhone) ||
           (cleanIdNum &&
             !cleanIdNum.startsWith('TEMP') &&
-            r.id_number.trim().toUpperCase() === cleanIdNum))
+            r.id_number.trim().toUpperCase() === cleanIdNum) ||
+          true)
     );
 
     if (existing) {
@@ -831,6 +850,7 @@ export default function AdminEventRegistrationsPage() {
       let updatedCount = 0;
       let skippedCount = 0;
       const rowErrors: string[] = [];
+      const workingRegs: Registration[] = [...registrations];
 
       for (let rIdx = 1; rIdx < parsedRows.length; rIdx++) {
         const row = parsedRows[rIdx];
@@ -914,27 +934,48 @@ export default function AdminEventRegistrationsPage() {
         const rawRole = idxRole >= 0 ? row[idxRole] || '' : '';
         const parsedRole = parseVolunteerRoleText(rawRole);
 
-        const res = await upsertSingleRegistration({
-          shiftId: matchedShift.id,
-          volunteerName: rawName,
-          phone: cleanPhone,
-          email: finalEmail,
-          idNumber: finalIdNum,
-          birthDate: finalBirth,
-          dietary: finalDietary,
-          emergencyContact: finalEmgName,
-          emergencyPhone: finalEmgPhone,
-          note: finalNote,
-          status: parsedStatus,
-          checkedIn: isCheckedIn,
-          checkedInAt: isCheckedIn ? new Date().toISOString() : null,
-          role: parsedRole,
-        });
+        const res = await upsertSingleRegistration(
+          {
+            shiftId: matchedShift.id,
+            volunteerName: rawName,
+            phone: cleanPhone,
+            email: finalEmail,
+            idNumber: finalIdNum,
+            birthDate: finalBirth,
+            dietary: finalDietary,
+            emergencyContact: finalEmgName,
+            emergencyPhone: finalEmgPhone,
+            note: finalNote,
+            status: parsedStatus,
+            checkedIn: isCheckedIn,
+            checkedInAt: isCheckedIn ? new Date().toISOString() : null,
+            role: parsedRole,
+          },
+          workingRegs
+        );
 
         if (res.error) {
           rowErrors.push(`第 ${rIdx + 1} 列（${rawName}）：${res.error}`);
         } else if (res.mode === 'inserted') {
           insertedCount++;
+          workingRegs.push({
+            id: res.regId || `temp-${rIdx}`,
+            event_id: eventId,
+            shift_id: matchedShift.id,
+            volunteer_name: rawName,
+            phone: cleanPhone,
+            email: finalEmail,
+            id_number: finalIdNum,
+            birth_date: finalBirth,
+            dietary: finalDietary,
+            emergency_contact: finalEmgName,
+            emergency_phone: finalEmgPhone,
+            note: finalNote,
+            status: parsedStatus,
+            checked_in: isCheckedIn,
+            checked_in_at: isCheckedIn ? new Date().toISOString() : null,
+            created_at: new Date().toISOString(),
+          });
         } else {
           updatedCount++;
         }
