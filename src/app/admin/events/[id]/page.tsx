@@ -15,18 +15,27 @@ import {
   Clock,
   AlertCircle,
   RefreshCw,
+  Shield,
 } from 'lucide-react';
 import {
   supabase,
   formatTimeRange,
   getDietaryLabel,
   getRegistrationStatusMeta,
+  getVolunteerRoleMeta,
 } from '@/lib/supabase';
+import {
+  getAdminSession,
+  recordAdminAction,
+  getEffectiveRegistrationRole,
+  updateVolunteerRole,
+} from '@/lib/audit';
 import type {
   VolunteerEvent,
   EventShift,
   Registration,
   RegistrationStatus,
+  VolunteerRole,
 } from '@/types/database';
 
 export default function AdminEventRegistrationsPage() {
@@ -34,36 +43,38 @@ export default function AdminEventRegistrationsPage() {
   const router = useRouter();
   const eventId = params?.id as string;
 
+  const [adminName, setAdminName] = useState<string>('');
+  const [adminRole, setAdminRole] = useState<VolunteerRole>('super_admin');
   const [event, setEvent] = useState<VolunteerEvent | null>(null);
   const [shifts, setShifts] = useState<EventShift[]>([]);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
 
   // 篩選條件
   const [selectedShiftId, setSelectedShiftId] = useState<string>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | RegistrationStatus>('all');
-  const [checkinFilter, setCheckinFilter] = useState<'all' | 'checked' | 'unchecked'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | RegistrationStatus>(
+    'all'
+  );
+  const [checkinFilter, setCheckinFilter] = useState<
+    'all' | 'checked' | 'unchecked'
+  >('all');
   const [searchQuery, setSearchQuery] = useState('');
 
   useEffect(() => {
-    checkAuthAndFetch();
-  }, [eventId]);
-
-  async function checkAuthAndFetch() {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
+    const session = getAdminSession();
     if (!session) {
       router.replace('/admin/login');
       return;
     }
+    setAdminName(session.adminName);
+    setAdminRole(session.role || 'super_admin');
 
     if (eventId) {
-      await fetchEventAndRegistrations();
+      fetchEventAndRegistrations();
     }
-  }
+  }, [eventId, router]);
 
   async function fetchEventAndRegistrations() {
     setLoading(true);
@@ -122,6 +133,18 @@ export default function AdminEventRegistrationsPage() {
       return;
     }
 
+    await recordAdminAction({
+      adminName: adminName || '管理員',
+      actionType: nextChecked ? 'CHECK_IN' : 'UNCHECK_IN',
+      actionLabel: nextChecked ? '志工簽到打卡' : '取消志工簽到',
+      targetName: `${reg.volunteer_name} (${reg.phone})`,
+      details: `活動「${event?.title || ''}」- 組別「${
+        reg.event_shifts?.group_name || ''
+      }」：將志工「${reg.volunteer_name}」設為${
+        nextChecked ? '已簽到' : '未簽到'
+      }`,
+    });
+
     setRegistrations((prev) =>
       prev.map((r) =>
         r.id === reg.id
@@ -131,23 +154,62 @@ export default function AdminEventRegistrationsPage() {
     );
   }
 
-  async function handleChangeStatus(regId: string, newStatus: RegistrationStatus) {
+  async function handleChangeStatus(
+    reg: Registration,
+    newStatus: RegistrationStatus
+  ) {
+    const oldLabel = getRegistrationStatusMeta(reg.status).label;
+    const newLabel = getRegistrationStatusMeta(newStatus).label;
+
     const { error } = await supabase
       .from('registrations')
       .update({ status: newStatus })
-      .eq('id', regId);
+      .eq('id', reg.id);
 
     if (error) {
       setErrorMsg(`變更錄取狀態失敗：${error.message}`);
       return;
     }
 
+    await recordAdminAction({
+      adminName: adminName || '管理員',
+      actionType: 'CHANGE_REG_STATUS',
+      actionLabel: '變更志工錄取狀態',
+      targetName: `${reg.volunteer_name} (${reg.phone})`,
+      details: `活動「${event?.title || ''}」：將志工「${
+        reg.volunteer_name
+      }」的狀態由「${oldLabel}」變更為「${newLabel}」`,
+    });
+
     await fetchEventAndRegistrations();
+  }
+
+  async function handleRoleChange(reg: Registration, newRole: VolunteerRole) {
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    await updateVolunteerRole({
+      operatorName: adminName || '管理員',
+      reg,
+      newRole,
+    });
+
+    const roleMeta = getVolunteerRoleMeta(newRole);
+    const { adminPin } = getEffectiveRegistrationRole(reg);
+    setSuccessMsg(
+      newRole === 'volunteer'
+        ? `已將志工「${reg.volunteer_name}」的權限設為「一般志工」（無後台進入權限）。`
+        : `已將志工「${reg.volunteer_name}」授權為「${roleMeta.shortLabel}」！該志工可憑姓名「${reg.volunteer_name}」（或手機 ${reg.phone}）與密碼「${adminPin}」登入管理後台。`
+    );
+
+    // 觸發畫面重新渲染
+    setRegistrations((prev) => [...prev]);
   }
 
   // 篩選後的名單
   const filteredList = registrations.filter((reg) => {
-    const matchShift = selectedShiftId === 'all' || reg.shift_id === selectedShiftId;
+    const matchShift =
+      selectedShiftId === 'all' || reg.shift_id === selectedShiftId;
     const matchStatus = statusFilter === 'all' || reg.status === statusFilter;
     const matchCheckin =
       checkinFilter === 'all' ||
@@ -166,11 +228,12 @@ export default function AdminEventRegistrationsPage() {
   });
 
   // 匯出 CSV (含 UTF-8 BOM 防止 Excel 中文亂碼)
-  function handleExportCSV() {
+  async function handleExportCSV() {
     if (!event) return;
 
     const headers = [
       '錄取狀態',
+      '後台管理權限',
       '現場簽到',
       '簽到時間',
       '組別名稱',
@@ -191,6 +254,8 @@ export default function AdminEventRegistrationsPage() {
 
     const rows = filteredList.map((r) => {
       const statusLabel = getRegistrationStatusMeta(r.status).label;
+      const effRole = getEffectiveRegistrationRole(r).role;
+      const roleLabel = getVolunteerRoleMeta(effRole).shortLabel;
       const checkedLabel = r.checked_in ? '已簽到' : '未簽到';
       const checkedTime = r.checked_in_at
         ? new Date(r.checked_in_at).toLocaleString('zh-TW')
@@ -202,12 +267,13 @@ export default function AdminEventRegistrationsPage() {
 
       return [
         escapeCsv(statusLabel),
+        escapeCsv(roleLabel),
         escapeCsv(checkedLabel),
         escapeCsv(checkedTime),
         escapeCsv(groupName),
         escapeCsv(timeRange),
         escapeCsv(r.volunteer_name),
-        escapeCsv(`'${r.phone}`), // 加上單引號或保留前導 0
+        escapeCsv(`'${r.phone}`),
         escapeCsv(r.email),
         escapeCsv(r.id_number),
         escapeCsv(r.birth_date),
@@ -230,6 +296,14 @@ export default function AdminEventRegistrationsPage() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+
+    await recordAdminAction({
+      adminName: adminName || '管理員',
+      actionType: 'EXPORT_CSV',
+      actionLabel: '匯出 CSV 名單',
+      targetName: event.title,
+      details: `管理員「${adminName}」匯出了活動「${event.title}」的志工與保險名單（共 ${filteredList.length} 筆）`,
+    });
   }
 
   // 統計數據（以正取志工統計餐點與簽到）
@@ -237,7 +311,9 @@ export default function AdminEventRegistrationsPage() {
   const waitlistRegs = registrations.filter((r) => r.status === 'waitlist');
   const checkedInCount = confirmedRegs.filter((r) => r.checked_in).length;
   const meatCount = confirmedRegs.filter((r) => r.dietary === 'meat').length;
-  const vegCount = confirmedRegs.filter((r) => r.dietary === 'vegetarian').length;
+  const vegCount = confirmedRegs.filter(
+    (r) => r.dietary === 'vegetarian'
+  ).length;
 
   return (
     <div className="space-y-6">
@@ -251,14 +327,20 @@ export default function AdminEventRegistrationsPage() {
           返回管理後台總覽
         </Link>
 
-        <button
-          type="button"
-          onClick={fetchEventAndRegistrations}
-          className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          <RefreshCw className="h-3.5 w-3.5" />
-          重新整理名單
-        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500">
+            目前操作：<strong className="text-emerald-700">{adminName}</strong>{' '}
+            ({getVolunteerRoleMeta(adminRole).shortLabel})
+          </span>
+          <button
+            type="button"
+            onClick={fetchEventAndRegistrations}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            重新整理名單
+          </button>
+        </div>
       </div>
 
       {/* 活動標題與匯出 CSV */}
@@ -339,6 +421,13 @@ export default function AdminEventRegistrationsPage() {
         </div>
       )}
 
+      {successMsg && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+          <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+          <span>{successMsg}</span>
+        </div>
+      )}
+
       {/* 篩選與搜尋工具列 */}
       <div className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-4">
         <div className="relative">
@@ -367,7 +456,9 @@ export default function AdminEventRegistrationsPage() {
 
         <select
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as 'all' | RegistrationStatus)}
+          onChange={(e) =>
+            setStatusFilter(e.target.value as 'all' | RegistrationStatus)
+          }
           className="rounded-xl border border-slate-300 px-3 py-2 text-xs font-medium outline-none focus:border-emerald-600"
         >
           <option value="all">全部錄取狀態</option>
@@ -392,7 +483,9 @@ export default function AdminEventRegistrationsPage() {
       {/* 報名志工名單表格 */}
       <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         {loading ? (
-          <div className="p-12 text-center text-sm text-slate-500">載入報名名單中...</div>
+          <div className="p-12 text-center text-sm text-slate-500">
+            載入報名名單中...
+          </div>
         ) : filteredList.length === 0 ? (
           <div className="p-12 text-center text-sm text-slate-500">
             目前沒有符合篩選條件的報名資料
@@ -403,16 +496,29 @@ export default function AdminEventRegistrationsPage() {
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
                 <tr>
                   <th className="px-4 py-3.5 font-bold">現場簽到打卡</th>
-                  <th className="px-4 py-3.5 font-bold">志工姓名 / 聯絡資訊</th>
+                  <th className="px-4 py-3.5 font-bold">
+                    志工姓名 / 聯絡資訊
+                  </th>
                   <th className="px-4 py-3.5 font-bold">報名組別與時段</th>
-                  <th className="px-4 py-3.5 font-bold">保險資料 (身分證 / 生日)</th>
+                  <th className="px-4 py-3.5 font-bold">
+                    保險資料 (身分證 / 生日)
+                  </th>
                   <th className="px-4 py-3.5 font-bold">餐點 / 緊急聯絡人</th>
                   <th className="px-4 py-3.5 font-bold">錄取狀態管理</th>
+                  <th className="px-4 py-3.5 font-bold">
+                    <span className="inline-flex items-center gap-1 text-indigo-700">
+                      <Shield className="h-3.5 w-3.5" />
+                      後台管理權限欄位
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredList.map((reg) => {
                   const statusMeta = getRegistrationStatusMeta(reg.status);
+                  const { role: effRole, adminPin } =
+                    getEffectiveRegistrationRole(reg);
+                  const roleMeta = getVolunteerRoleMeta(effRole);
 
                   return (
                     <tr key={reg.id} className="hover:bg-slate-50/80 transition">
@@ -441,10 +547,13 @@ export default function AdminEventRegistrationsPage() {
                         </button>
                         {reg.checked_in_at && (
                           <div className="mt-1 text-[10px] text-slate-400">
-                            {new Date(reg.checked_in_at).toLocaleTimeString('zh-TW', {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
+                            {new Date(reg.checked_in_at).toLocaleTimeString(
+                              'zh-TW',
+                              {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              }
+                            )}
                           </div>
                         )}
                       </td>
@@ -454,7 +563,9 @@ export default function AdminEventRegistrationsPage() {
                         <div className="text-sm font-bold text-slate-900">
                           {reg.volunteer_name}
                         </div>
-                        <div className="font-mono text-slate-600">{reg.phone}</div>
+                        <div className="font-mono text-slate-600">
+                          {reg.phone}
+                        </div>
                         <div className="text-slate-400">{reg.email}</div>
                       </td>
 
@@ -479,7 +590,9 @@ export default function AdminEventRegistrationsPage() {
                         <div className="font-mono font-semibold text-slate-800">
                           {reg.id_number}
                         </div>
-                        <div className="text-slate-500">生日：{reg.birth_date}</div>
+                        <div className="text-slate-500">
+                          生日：{reg.birth_date}
+                        </div>
                       </td>
 
                       {/* 餐點與緊急聯絡人 */}
@@ -512,7 +625,7 @@ export default function AdminEventRegistrationsPage() {
                           value={reg.status}
                           onChange={(e) =>
                             handleChangeStatus(
-                              reg.id,
+                              reg,
                               e.target.value as RegistrationStatus
                             )
                           }
@@ -522,6 +635,41 @@ export default function AdminEventRegistrationsPage() {
                           <option value="waitlist">設為：候補</option>
                           <option value="cancelled">設為：已取消</option>
                         </select>
+                      </td>
+
+                      {/* 後台管理權限欄位 (role) */}
+                      <td className="px-4 py-3.5 align-middle space-y-1.5">
+                        <div>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${roleMeta.badgeClass}`}
+                          >
+                            {roleMeta.shortLabel}
+                          </span>
+                        </div>
+                        <select
+                          value={effRole}
+                          disabled={adminRole !== 'super_admin'}
+                          onChange={(e) =>
+                            handleRoleChange(
+                              reg,
+                              e.target.value as VolunteerRole
+                            )
+                          }
+                          className="rounded-lg border border-indigo-200 bg-indigo-50/40 px-2 py-1 text-xs font-semibold text-slate-800 outline-none focus:border-indigo-600 disabled:opacity-50"
+                        >
+                          <option value="volunteer">權限：一般志工</option>
+                          <option value="staff_admin">
+                            權限：🛡️ 志工幹部管理員
+                          </option>
+                          <option value="super_admin">
+                            權限：👑 最高管理員
+                          </option>
+                        </select>
+                        {effRole !== 'volunteer' && (
+                          <div className="text-[11px] text-indigo-700 font-mono">
+                            登入密碼：{adminPin}
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );

@@ -1,6 +1,7 @@
 export type EventStatus = 'open' | 'closed' | 'draft';
 export type DietaryType = 'meat' | 'vegetarian' | 'none';
 export type RegistrationStatus = 'confirmed' | 'waitlist' | 'cancelled';
+export type VolunteerRole = 'volunteer' | 'staff_admin' | 'super_admin';
 
 export interface EventShift {
   id: string;
@@ -44,11 +45,17 @@ export interface Registration {
   status: RegistrationStatus;
   checked_in: boolean;
   checked_in_at: string | null;
+  role?: VolunteerRole;
+  admin_pin?: string;
   created_at: string;
   event_shifts?: {
     group_name: string;
     start_time: string;
     end_time: string;
+  };
+  events?: {
+    title: string;
+    event_date: string;
   };
 }
 
