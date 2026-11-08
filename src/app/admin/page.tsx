@@ -1341,7 +1341,7 @@ export default function AdminDashboardPage() {
                           className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-emerald-700"
                         >
                           <ClipboardList className="h-4 w-4" />
-                          名單管理・現場簽到・匯出 CSV
+                          名單管理・電話代登・CSV 匯出/匯入
                         </Link>
 
                         {adminRole === 'super_admin' && (
@@ -1615,6 +1615,8 @@ export default function AdminDashboardPage() {
                 <option value="UNCHECK_IN">取消志工簽到</option>
                 <option value="CHANGE_REG_STATUS">變更志工錄取狀態</option>
                 <option value="EXPORT_CSV">匯出 CSV 名單</option>
+                <option value="IMPORT_CSV">匯入 CSV 名單</option>
+                <option value="MANUAL_REGISTER">電話代客報名 (人工新增)</option>
                 <option value="CHANGE_PASSWORD">修改管理員密碼</option>
               </select>
             </div>

@@ -15,6 +15,8 @@ export type AdminActionType =
   | 'CHANGE_REG_STATUS'
   | 'CHANGE_VOLUNTEER_ROLE'
   | 'EXPORT_CSV'
+  | 'IMPORT_CSV'
+  | 'MANUAL_REGISTER'
   | 'CHANGE_PASSWORD';
 
 export interface AdminAuditLog {
