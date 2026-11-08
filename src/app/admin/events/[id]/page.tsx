@@ -1509,8 +1509,129 @@ export default function AdminEventRegistrationsPage() {
             </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <>
+            {/* 手機版響應式卡片列表 (RWD Mobile View: 專供活動現場用手機快速簽到與管理) */}
+            <div className="divide-y divide-slate-200 md:hidden">
+              {filteredList.map((reg) => {
+                const statusMeta = getRegistrationStatusMeta(reg.status);
+                const { role: effRole, adminPin } =
+                  getEffectiveRegistrationRole(reg);
+                const roleMeta = getVolunteerRoleMeta(effRole);
+
+                return (
+                  <div key={reg.id} className="p-4 space-y-3 bg-white">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-base font-extrabold text-slate-900">
+                            {reg.volunteer_name}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-bold ${statusMeta.badgeClass}`}
+                          >
+                            {statusMeta.label}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-bold ${roleMeta.badgeClass}`}
+                          >
+                            {roleMeta.shortLabel}
+                          </span>
+                        </div>
+                        <div className="font-mono text-xs text-slate-600">
+                          📞 {reg.phone} · 🍱 {getDietaryLabel(reg.dietary)}
+                        </div>
+                        <div className="text-xs font-bold text-emerald-800">
+                          📍 {reg.event_shifts?.group_name || '-'}
+                          {reg.event_shifts &&
+                            ` (${formatTimeRange(
+                              reg.event_shifts.start_time,
+                              reg.event_shifts.end_time
+                            )})`}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleToggleCheckIn(reg)}
+                        className={`shrink-0 inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2.5 text-xs font-bold transition ${
+                          reg.checked_in
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : 'border-2 border-emerald-600 bg-emerald-50 text-emerald-800'
+                        }`}
+                      >
+                        {reg.checked_in ? (
+                          <>
+                            <CheckCircle2 className="h-4 w-4" />
+                            已簽到
+                          </>
+                        ) : (
+                          <>
+                            <UserCheck className="h-4 w-4" />
+                            點此簽到
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    <div className="rounded-xl bg-slate-50 p-2.5 text-[11px] text-slate-600 space-y-1">
+                      <div>
+                        身分證：<span className="font-mono">{reg.id_number}</span> · 生日：{reg.birth_date}
+                      </div>
+                      <div>
+                        緊急聯絡人：{reg.emergency_contact} ({reg.emergency_phone})
+                      </div>
+                      {reg.note && (
+                        <div className="text-amber-800 font-medium">
+                          備註：{reg.note}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <select
+                        value={reg.status}
+                        onChange={(e) =>
+                          handleChangeStatus(
+                            reg,
+                            e.target.value as RegistrationStatus
+                          )
+                        }
+                        className="rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-xs font-semibold text-slate-700"
+                      >
+                        <option value="confirmed">錄取狀態：正取</option>
+                        <option value="waitlist">錄取狀態：候補</option>
+                        <option value="cancelled">錄取狀態：已取消</option>
+                      </select>
+
+                      <select
+                        value={effRole}
+                        disabled={adminRole !== 'super_admin'}
+                        onChange={(e) =>
+                          handleRoleChange(
+                            reg,
+                            e.target.value as VolunteerRole
+                          )
+                        }
+                        className="rounded-xl border border-indigo-200 bg-indigo-50/50 px-2.5 py-2 text-xs font-semibold text-slate-800 disabled:opacity-50"
+                      >
+                        <option value="volunteer">權限：一般志工</option>
+                        <option value="staff_admin">權限：🛡️ 幹部管理員</option>
+                        <option value="super_admin">權限：👑 最高管理員</option>
+                      </select>
+                    </div>
+                    {effRole !== 'volunteer' && (
+                      <div className="text-[11px] text-indigo-700 font-mono">
+                        後台登入密碼：{adminPin}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 電腦與平板完整表格 (Desktop & Tablet View) */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
                 <tr>
                   <th className="px-4 py-3.5 font-bold">現場簽到打卡</th>
@@ -1695,6 +1816,7 @@ export default function AdminEventRegistrationsPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </div>
     </div>
